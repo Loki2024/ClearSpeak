@@ -18,14 +18,14 @@
 html, body, #root { height: 100%; }
 body {
   margin: 0;
-  background:
-    radial-gradient(1200px 800px at 10% 0%, #0f1824 0%, transparent 60%),
-    radial-gradient(900px 700px at 100% 0%, #0b1a2a 0%, transparent 50%),
-    linear-gradient(180deg, var(--bg) 0%, #070a0f 100%);
+  background-color: #0a1826;  /* solid dark blue background */
   color: var(--text);
   font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
   letter-spacing: .01em;
 }
+
+
+
 
 .container { max-width: 980px; margin: 56px auto; padding: 0 20px; }
 

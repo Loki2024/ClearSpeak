@@ -8,6 +8,34 @@ declare global {
 export {}
 
 import { useApp } from '../store'
+import { translateText } from "./translate"
+
+export async function startRecognition() {
+  const s = useApp.getState()
+
+  const recognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)()
+  recognition.lang = s.inputLang
+  recognition.interimResults = false
+
+  recognition.onresult = async (event: any) => {
+    const transcript = event.results[0][0].transcript
+    console.log("Heard:", transcript)
+    s.setASR(transcript)
+
+    const translated = await translateText(transcript, s.inputLang, s.outputLang)
+    console.log("Translated:", translated)
+    
+    // Optionally store translated text
+    s.setASR(translated)
+  }
+
+  recognition.onerror = (event: any) => {
+    console.error("Speech recognition error:", event.error)
+  }
+
+  recognition.start()
+}
+
 
 let ctx: AudioContext | null = null
 let analyser: AnalyserNode | null = null
