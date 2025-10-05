@@ -1,179 +1,187 @@
-// ✅ TypeScript shim for Web Speech API globals
+// Type shim for Web Speech API
 declare global {
   interface Window {
-    SpeechRecognition: any;
-    webkitSpeechRecognition: any;
+    SpeechRecognition: any
+    webkitSpeechRecognition: any
   }
 }
-export {};
+export {}
 
-import { useApp } from "../store";
-import { initRnnoise } from "./rnnoise";
-import { recordEnhanced, playEnhanced, getAudioContext } from "./enhance";
+import { useApp } from '../store'
 
-let ctx: AudioContext | null = null;
-let analyser: AnalyserNode | null = null;
-let recognition: any | null = null;
-let meterActive = false;
-let currentNoise = 20;
+let ctx: AudioContext | null = null
+let analyser: AnalyserNode | null = null
+let micSource: MediaStreamAudioSourceNode | null = null
+let meterLoopId = 0
 
-/** Initialize audio capture + RNNoise (for metering & ASR). */
+// Separate buffers for environment listening
+let envLoopId = 0
+let envSamples: number[] = []
+
+/** Initialize mic + analyser (no processing) */
 export async function initAudio() {
-  if (ctx) return;
-  ctx = new AudioContext();
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  const src = ctx.createMediaStreamSource(stream);
-
-  await initRnnoise(ctx);
-
-  analyser = ctx.createAnalyser();
-  analyser.fftSize = 1024;
-  src.connect(analyser);
-  await ctx.resume();
-  startMeter();
-  console.log("🎤 Audio initialized");
+  if (ctx) return
+  ctx = new AudioContext()
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: {
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+      channelCount: 1,
+      sampleRate: 48000,
+    }
+  })
+  micSource = ctx.createMediaStreamSource(stream)
+  analyser = ctx.createAnalyser()
+  analyser.fftSize = 1024
+  micSource.connect(analyser)
+  await ctx.resume()
+  startMeter() // general meter (kept running)
+  console.log('🎤 Audio initialized')
 }
 
-/** Real-time noise meter loop → store.noise */
+/** General noise meter loop (for non-env listening UI too) */
 function startMeter() {
-  if (meterActive) return;
-  meterActive = true;
-
-  const { setNoise } = useApp.getState();
-  const data = new Uint8Array(1024);
+  if (!analyser) return
+  cancelAnimationFrame(meterLoopId)
+  const data = new Uint8Array(1024)
+  const { setNoise } = useApp.getState()
 
   const loop = () => {
-    if (!analyser) return;
-    analyser.getByteTimeDomainData(data);
+    if (!analyser) return
+    analyser.getByteTimeDomainData(data)
 
-    let sum = 0;
+    // RMS
+    let sum = 0
     for (const x of data) {
-      const v = (x - 128) / 128;
-      sum += v * v;
+      const v = (x - 128) / 128
+      sum += v * v
     }
-    const rms = Math.sqrt(sum / data.length);
-    const dBA = Math.max(20, Math.min(100, 20 * Math.log10(rms + 1e-4) + 90));
-    currentNoise += (dBA - currentNoise) * 0.15;
+    const rms = Math.sqrt(sum / data.length)
+    const dBA = Math.max(20, Math.min(100, 20 * Math.log10(rms + 1e-4) + 90))
 
-    setNoise(currentNoise);
-    requestAnimationFrame(loop);
-  };
-
-  loop();
+    setNoise(dBA)
+    meterLoopId = requestAnimationFrame(loop)
+  }
+  loop()
 }
 
-/** Helper: map ambient dBA → suggested TTS volume (0..1). */
+/** Map ambient dBA to suggested TTS volume (0..1) */
 export function volumeFromNoise(noiseDBA: number) {
-  if (noiseDBA <= 25) return 0.45;
-  if (noiseDBA <= 45) return 0.45 + (noiseDBA - 25) * (0.20 / 20);
-  if (noiseDBA <= 65) return 0.65 + (noiseDBA - 45) * (0.20 / 20);
-  return Math.min(1.0, 0.85 + (noiseDBA - 65) * (0.15 / 20));
+  if (noiseDBA <= 25) return 0.40
+  if (noiseDBA <= 45) return 0.40 + (noiseDBA - 25) * (0.20 / 20)
+  if (noiseDBA <= 65) return 0.60 + (noiseDBA - 45) * (0.20 / 20)
+  return Math.min(1.0, 0.80 + (noiseDBA - 65) * (0.20 / 20))
 }
 
-/** Ambient measurement for N seconds; returns average dBA. */
-export async function startEnvListening(durationSec = 5): Promise<number> {
-  if (!ctx || !analyser) await initAudio();
-  if (!ctx || !analyser) throw new Error('Audio not initialized.');
+/** Start environment listening (indefinite) with 5s minimum */
+export async function startEnvListening() {
+  if (!ctx || !analyser) await initAudio()
+  const s = useApp.getState()
+  if (s.envListening) return
 
-  console.log(`🎧 Listening to environment for ${durationSec}s...`);
-  const values: number[] = [];
-  const data = new Uint8Array(1024);
-  const start = performance.now();
+  useApp.getState().startEnvSession()
+  envSamples = []
+  cancelAnimationFrame(envLoopId)
 
-  return new Promise((resolve) => {
-    const tick = () => {
-      if (!analyser) return resolve(0);
-      analyser.getByteTimeDomainData(data);
-      let sum = 0;
-      for (const x of data) {
-        const v = (x - 128) / 128;
-        sum += v * v;
-      }
-      const rms = Math.sqrt(sum / data.length);
-      const dBA = Math.max(20, Math.min(100, 20 * Math.log10(rms + 1e-4) + 90));
-      values.push(dBA);
+  const data = new Uint8Array(1024)
+  const start = performance.now()
 
-      if (performance.now() - start < durationSec * 1000) {
-        requestAnimationFrame(tick);
-      } else {
-        const avg = values.reduce((a, b) => a + b, 0) / Math.max(1, values.length);
-        console.log(`✅ Environment noise average: ${avg.toFixed(1)} dBA`);
-        resolve(avg);
-      }
-    };
-    tick();
-  });
+  const loop = () => {
+    if (!analyser) return
+    analyser.getByteTimeDomainData(data)
+
+    // sample → dBA-like value
+    let sum = 0
+    for (const x of data) {
+      const v = (x - 128) / 128
+      sum += v * v
+    }
+    const rms = Math.sqrt(sum / data.length)
+    const dBA = Math.max(20, Math.min(100, 20 * Math.log10(rms + 1e-4) + 90))
+
+    envSamples.push(dBA)
+
+    const elapsedSec = (performance.now() - start) / 1000
+    const minCountdown = Math.max(0, 5 - elapsedSec)
+    useApp.getState().updateEnvProgress(elapsedSec, minCountdown)
+
+    envLoopId = requestAnimationFrame(loop)
+  }
+  loop()
 }
 
-/** No-op for compatibility with older UI; measurement auto-stops. */
+/** Stop environment listening; requires 5s minimum (UI enforces) */
 export function stopEnvListening() {
-  console.log('🛑 Environment listening stop requested (no-op)');
+  cancelAnimationFrame(envLoopId)
+  const s = useApp.getState()
+
+  const avg =
+    envSamples.length > 0
+      ? envSamples.reduce((a, b) => a + b, 0) / envSamples.length
+      : 0
+
+  s.stopEnvSession(avg)
+
+  // compute suggestion & apply
+  const suggested = volumeFromNoise(avg || 20)
+  s.setSuggestedVolume(suggested)
+  s.setVolume(suggested)
+
+  console.log(`✅ Env avg: ${avg.toFixed(1)} dBA → suggested volume ${Math.round(suggested*100)}%`)
 }
 
-/** Record, enhance, and immediately play back the user’s speech. */
-export async function recordAndPlayEnhanced(seconds = 5) {
-  // Reuse enhancer's context if initialized
-  const existing = getAudioContext();
-  if (!ctx && existing) ctx = existing;
-  if (!ctx) await initAudio();
-
-  console.log('🎙️ Recording and enhancing speech...');
-  const blob = await recordEnhanced(seconds);
-  console.log('🎧 Playing enhanced output...');
-  playEnhanced(blob);
-}
-
-/** TTS out */
+/** TTS output */
 export function speak(text: string) {
-  const s = useApp.getState();
-  const u = new SpeechSynthesisUtterance(text);
-  u.lang = s.outputLang;
-  u.rate = s.rate;
-  u.pitch = s.pitch;
-  u.volume = s.volume;
-  window.speechSynthesis.speak(u);
+  const s = useApp.getState()
+  const u = new SpeechSynthesisUtterance(text)
+  u.lang = s.outputLang
+  u.rate = s.rate
+  u.pitch = s.pitch
+  u.volume = s.volume
+  window.speechSynthesis.speak(u)
 }
 
-/** Start Web Speech API recognition */
+/** ASR start/stop */
+let recognition: any | null = null
+
 export function startRecording() {
-  const { inputLang, setASR, toggleRun } = useApp.getState();
-  const Rec = window.webkitSpeechRecognition || window.SpeechRecognition;
+  const { inputLang, setASR, toggleRun, setMode } = useApp.getState()
+  const Rec = window.webkitSpeechRecognition || window.SpeechRecognition
   if (!Rec) {
-    alert("SpeechRecognition not supported");
-    return;
+    alert('SpeechRecognition not supported')
+    return
   }
 
-  recognition = new Rec();
-  recognition.lang = inputLang;
-  recognition.continuous = true;
-  recognition.interimResults = true;
+  recognition = new Rec()
+  recognition.lang = inputLang
+  recognition.continuous = true
+  recognition.interimResults = true
+
+  recognition.onstart = () => setMode('asr')
+  recognition.onend = () => useApp.getState().setMode('idle')
 
   recognition.onresult = (e: any) => {
-    let txt = "";
+    let txt = ''
     for (let i = e.resultIndex; i < e.results.length; i++) {
-      txt += e.results[i][0].transcript + " ";
+      txt += e.results[i][0].transcript + ' '
     }
-    setASR(txt.trim());
-  };
+    setASR(txt.trim())
+  }
 
-  recognition.onend = () => {
-    const { running } = useApp.getState();
-    if (running) stopRecording();
-  };
-
-  recognition.start();
-  toggleRun();
-  console.log("🎙️ Recognition started");
+  recognition.start()
+  toggleRun()
+  console.log('🎙️ Recognition started')
 }
 
-/** Stop recognition */
 export function stopRecording() {
-  const { running, toggleRun } = useApp.getState();
+  const { running, toggleRun } = useApp.getState()
   if (recognition) {
-    recognition.onend = null;
-    recognition.stop();
-    recognition = null;
+    recognition.onend = null
+    recognition.stop()
+    recognition = null
   }
-  if (running) toggleRun();
-  console.log("🛑 Recognition stopped");
+  useApp.getState().setMode('idle')
+  if (running) toggleRun()
+  console.log('🛑 Recognition stopped')
 }

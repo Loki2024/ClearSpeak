@@ -1,2 +1,0 @@
-# ClearSpeak
-Pitt Wireless Hackathon

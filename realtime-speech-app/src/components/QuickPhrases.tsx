@@ -1,25 +1,55 @@
+import { useState } from 'react'
 import { useApp } from '../store'
 import { speak } from '../audio/pipeline'
-import { useState } from 'react'
 
-export default function QuickPhrases(){
-  const {phrases,addPhrase,removePhrase}=useApp()
-  const [t,setT]=useState('')
+export default function QuickPhrases() {
+  const { phrases, addPhrase, removePhrase } = useApp()
+  const [newText, setNewText] = useState('')
+
   return (
-    <div className="card">
-      <h3>Quick phrases</h3>
-      <div style={{display:'flex',gap:8}}>
-        <input style={{flex:1}} value={t} onChange={e=>setT(e.target.value)} placeholder="Add phrase"/>
-        <button onClick={()=>{if(t.trim()){addPhrase(t.trim());setT('')}}}>Add</button>
+    <div style={{ marginTop: 18 }}>
+      <h3>Quick Phrases</h3>
+
+      <div style={{ display: 'flex', gap: 10 }}>
+        <input
+          value={newText}
+          onChange={(e) => setNewText(e.target.value)}
+          placeholder="Add a phrase..."
+          style={{ flex: 1 }}
+        />
+        <button className="button-primary"
+          onClick={() => {
+            if (newText.trim()) {
+              addPhrase(newText.trim())
+              setNewText('')
+            }
+          }}
+        >
+          Add
+        </button>
       </div>
-      <div style={{marginTop:12,display:'flex',flexWrap:'wrap',gap:8}}>
-        {phrases.map(p=>(
-          <div key={p.id} style={{display:'flex',alignItems:'center',gap:4}}>
-            <button onClick={()=>speak(p.text)}>{p.text}</button>
-            <button onClick={()=>removePhrase(p.id)}>×</button>
-          </div>
+
+      <ul style={{ marginTop: 12, paddingLeft: 0, listStyle: 'none' }}>
+        {phrases.map((p) => (
+          <li
+            key={p.id}
+            style={{
+              display: 'flex',
+              gap: 10,
+              alignItems: 'center',
+              marginBottom: 8,
+              background: 'linear-gradient(180deg, #101826, #0b1320)',
+              border: '1px solid var(--border)',
+              borderRadius: 12,
+              padding: '8px 10px'
+            }}
+          >
+            <button onClick={() => speak(p.text)} title="Speak" style={{ padding: '8px 10px' }}>▶︎</button>
+            <span style={{ flex: 1, color: '#dfe7f3' }}>{p.text}</span>
+            <button onClick={() => removePhrase(p.id)} title="Remove" className="button-danger">Delete</button>
+          </li>
         ))}
-      </div>
+      </ul>
     </div>
   )
 }
